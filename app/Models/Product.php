@@ -1,0 +1,116 @@
+<?php
+
+namespace App\Models;
+
+use Illuminate\Database\Eloquent\Model;
+use Illuminate\Support\Str;
+use Illuminate\Support\Arr;
+
+class Product extends Model
+{
+    const TYPE_NORMAL = 'normal';
+    const TYPE_CROWDFUNDING = 'crowdfunding';
+    const TYPE_SECKILL = 'seckill';
+    public static $typeMap = [
+        self::TYPE_NORMAL => '普通商品',
+        self::TYPE_CROWDFUNDING => '众筹商品',
+        self::TYPE_SECKILL => '秒杀商品',
+    ];
+    protected $fillable = [
+        'title', 'description', 'image', 'on_sale', 'long_title',
+        'rating', 'sold_count', 'review_count', 'price', 'type'
+    ];
+
+    protected $casts = [
+        'on_sale' => 'boolean', // 布尔类型
+    ];
+
+    // 与商品sku关联
+    public function skus()
+    {
+        return $this->hasMany(ProductSku::class);
+    }
+
+    public function category()
+    {
+        return $this->belongsTo(Category::class);
+    }
+
+    public function crowdfunding()
+    {
+        return $this->hasOne(CrowdfundingProduct::class);
+    }
+
+    public function properties()
+    {
+        return $this->hasMany(ProductProperty::class);
+    }
+
+    public function seckill()
+    {
+        return $this->hasOne(SeckillProduct::class);
+    }
+
+    public function getImageUrlAttribute()
+    {
+        // 如果 image 字段本身就已经是完整的 url 就直接返回
+        if (Str::startsWith($this->attributes['image'], ['http://', 'https://'])) {
+            return $this->attributes['image'];
+        }
+        return \Storage::disk('public')->url($this->attributes['image']);
+    }
+
+    public function getGroupedPropertiesAttribute()
+    {
+        return $this->properties
+            // 按照属性聚合，返回集合的 key 是属性名， value 是包含该属性名的所有属性
+            ->groupBy('name')
+            ->map(function ($properties) {
+                // 使用 map 方法将属性集合变为属性值集合
+                return $properties->pluck('value')->all();
+            });
+    }
+
+    public function toESArray()
+    {
+        // 只取出需要的字段
+        $arr = Arr::only($this->toArray(), [
+            'id',
+            'type',
+            'title',
+            'category_id',
+            'long_title',
+            'on_sale',
+            'rating',
+            'sold_count',
+            'review_count',
+            'price',
+        ]);
+
+        // 如果商品有类目，则category字段为类目名数组，否则为空字符串
+        $arr['category'] = $this->category ? explode(' - ', $this->category->full_name) : '';
+        // 类目的path字段
+        $arr['category_path'] = $this->category ? $this->category->path : '';
+        // strip_tags 函数可以将 html 标签去除
+        $arr['description'] = strip_tags($this->description);
+        // 只取出需要的sku字段
+        $arr['skus'] = $this->skus->map(function (ProductSku $sku) {
+            return Arr::only($sku->toArray(), ['title', 'description', 'price']);
+        });
+        // 只取出需要的properties
+        $arr['properties'] = $this->properties->map(function (ProductProperty $property) {
+            // 对应的增加一个 search_value 字段，用符号：降属性名与属性值拼接
+            return array_merge(array_only($property->toArray(), ['name', 'value']), [
+                'search_value' => $property->name.':'.$property->value,
+            ]);
+//            return Arr::only($property->toArray(), ['name', 'value']);
+        });
+
+        return $arr;
+    }
+
+    public function scopeByIds($query, $ids)
+    {
+        return $query->whereIn('id', $ids)->orderByRaw(sprintf("FIND_IN_SET(id, '%s')", join(',', $ids)));
+    }
+}
